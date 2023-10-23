@@ -60,7 +60,6 @@ def create_dataframe_with_data(data_directory_filename):
 
         cycle_df['health'] = pd.to_numeric(cycle_df['health'], errors='coerce').apply(lambda x: 1 if x >= 1 else x)
 
-        # Dodajte podatke iz ovog ciklusa u glavni DataFrame
         df = pd.concat([df, cycle_df], ignore_index=True)
 
     df = df.round(3)
