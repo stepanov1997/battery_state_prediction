@@ -3,6 +3,8 @@ import scipy.io
 import pandas as pd
 import os
 from sklearn.model_selection import train_test_split
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import matplotlib.pyplot as plt
 
 DATA_DIRECTORY_FILENAME = 'C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction\\data'
@@ -60,6 +62,8 @@ def create_dataframe_with_data(data_directory_filename):
 
         cycle_df['health'] = pd.to_numeric(cycle_df['health'], errors='coerce').apply(lambda x: 1 if x >= 1 else x)
 
+        cycle_df = cycle_df.dropna()
+
         df = pd.concat([df, cycle_df], ignore_index=True)
 
     df = df.round(3)
@@ -68,13 +72,7 @@ def create_dataframe_with_data(data_directory_filename):
 
 
 # noinspection PyShadowingNames
-def split_dataframe(df):
-    # X will contain n-1 columns, i.e., all except the last one
-    X = df.iloc[:, :-1]
-
-    # y will contain the last column
-    y = df.iloc[:, -1]
-
+def split_dataframe(X, y):
     # First, split the data into a training set (70%) and a temporary set (30%)
     X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
 
@@ -95,14 +93,37 @@ def plot_dataset(X, y, c, label):
     plt.show()
 
 
+def scale_dataset(X):
+    column_names = X.columns
+    scaler = MinMaxScaler()
+    # Fit the scaler to the data and transform the data
+    scaled_data = scaler.fit_transform(X)
+    return pd.DataFrame(scaled_data, columns=column_names), scaler
+
+
+def select_features_in_dataset(X, y):
+    selector = SelectKBest(score_func=f_classif, k=5)
+    selected_features = selector.fit_transform(X, y)
+    cols_idxs = selector.get_support(indices=True)
+    return pd.DataFrame(selected_features, columns=X.columns[cols_idxs]), selector
+
+
 if __name__ == '__main__':
     dataframe = create_dataframe_with_data(DATA_DIRECTORY_FILENAME)
     print(dataframe)
 
-    (X_train, y_train), (X_val, y_val), (X_test, y_test) = split_dataframe(dataframe)
+    X = dataframe.iloc[:, :-1]
+    y = dataframe.iloc[:, -1]
 
-    plot_dataset(X_train['time'], y_train, X_train['Temperature_measured_max'], label='Training Data')
-    plot_dataset(X_val['time'], y_val, X_val['Temperature_measured_max'], label='Validation Data')
-    plot_dataset(X_test['time'], y_test, X_test['Temperature_measured_max'], label='Test Data')
+    X, scaler = scale_dataset(X)
+    X, selector = select_features_in_dataset(X, y)
+
+    (X_train, y_train), (X_val, y_val), (X_test, y_test) = split_dataframe(X, y)
+
+    plot_dataset(X_train['Temperature_measured_max'], y_train, X_train['ambient_temperature'], label='Training Data')
+
+    # plot_dataset(X_train['time'], y_train, X_train['Temperature_measured_max'], label='Training Data')
+    # plot_dataset(X_val['time'], y_val, X_val['Temperature_measured_max'], label='Validation Data')
+    # plot_dataset(X_test['time'], y_test, X_test['Temperature_measured_max'], label='Test Data')
 
     dataframe.to_csv('experiment1_dataset_v1.csv', index=False)
