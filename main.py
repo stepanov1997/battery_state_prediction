@@ -6,6 +6,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.svm import SVC
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.pipeline import Pipeline
 
 DATA_DIRECTORY_FILENAME = 'C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction\\data'
 
@@ -76,8 +81,8 @@ def split_dataframe(X, y):
     # First, split the data into a training set (70%) and a temporary set (30%)
     X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
 
-    # Then, split the temporary set into a validation set (20%) and a test set (10%)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.333, random_state=42)
+    # Then, split the temporary set into a validation set (10%) and a test set (20%)
+    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.666, random_state=42)
 
     # Now you have X_train, y_train for training, X_val, y_val for validation, and X_test, y_test for testing.
     return (X_train, y_train), (X_val, y_val), (X_test, y_test)
@@ -95,7 +100,7 @@ def plot_dataset(X, y, c, label):
 
 def scale_dataset(X):
     column_names = X.columns
-    scaler = MinMaxScaler()
+    scaler = StandardScaler()
     # Fit the scaler to the data and transform the data
     scaled_data = scaler.fit_transform(X)
     return pd.DataFrame(scaled_data, columns=column_names), scaler
@@ -108,6 +113,39 @@ def select_features_in_dataset(X, y):
     return pd.DataFrame(selected_features, columns=X.columns[cols_idxs]), selector
 
 
+def train_model(X_tuple, y_tuple):
+    (X_train, X_val, X_test), (y_train, y_val, y_test) = X_tuple, y_tuple
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),  # Standardize features
+        ('regressor', LinearRegression())  # Linear Regression model
+    ])
+    param_grid = {
+        # 'linear__fit_intercept': [True, False],
+        # 'linear__n_jobs': [1, 3, 5, 8],
+        # 'linear__positive': [True, False],
+        # 'svm__C': [1, 3, 5],
+        # 'svm__kernel': ['linear', 'poly', 'rbf', 'sigmoid', 'precomputed'],
+        # 'svm__gamma': ['scale', 'auto']
+        'scaler__with_std': [True, False],
+        'regressor__fit_intercept': [True, False],  # Include or exclude the intercept
+        'regressor__positive': [True, False]  # Normalize the features
+    }
+
+    grid_search = GridSearchCV(pipeline, param_grid, verbose=1, cv=10, scoring='neg_mean_squared_error')
+    grid_search.fit(X_train, y_train)
+
+    print("The best hyperparameters: ", grid_search.best_params_)
+
+    y_true = pd.concat([y_val, y_test]).values
+
+    y_pred = grid_search.predict(pd.concat([X_val, X_test]))
+    mse = mean_squared_error(y_true, y_pred)
+    r2 = r2_score(y_true, y_pred)
+
+    print("Mean Squared Error (MSE) on validation and test set: ", mse)
+    print("R-squared (R^2) on validation and test set: ", r2)
+
+
 if __name__ == '__main__':
     dataframe = create_dataframe_with_data(DATA_DIRECTORY_FILENAME)
     print(dataframe)
@@ -115,8 +153,8 @@ if __name__ == '__main__':
     X = dataframe.iloc[:, :-1]
     y = dataframe.iloc[:, -1]
 
-    X, scaler = scale_dataset(X)
-    X, selector = select_features_in_dataset(X, y)
+    # X, scaler = scale_dataset(X)
+    # X, selector = select_features_in_dataset(X, y)
 
     (X_train, y_train), (X_val, y_val), (X_test, y_test) = split_dataframe(X, y)
 
@@ -127,3 +165,5 @@ if __name__ == '__main__':
     # plot_dataset(X_test['time'], y_test, X_test['Temperature_measured_max'], label='Test Data')
 
     dataframe.to_csv('experiment1_dataset_v1.csv', index=False)
+
+    train_model((X_train, X_val, X_test), (y_train, y_val, y_test))
