@@ -6,8 +6,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
-from sklearn.svm import SVC
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.svm import SVR
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
@@ -113,28 +114,15 @@ def select_features_in_dataset(X, y):
     return pd.DataFrame(selected_features, columns=X.columns[cols_idxs]), selector
 
 
-def train_model(X_tuple, y_tuple):
+def train_model_with_estimator(X_tuple, y_tuple, estimator, grid_params):
     (X_train, X_val, X_test), (y_train, y_val, y_test) = X_tuple, y_tuple
     pipeline = Pipeline([
-        ('scaler', StandardScaler()),  # Standardize features
-        ('regressor', LinearRegression())  # Linear Regression model
+        ('scaler', StandardScaler()),
+        estimator
     ])
-    param_grid = {
-        # 'linear__fit_intercept': [True, False],
-        # 'linear__n_jobs': [1, 3, 5, 8],
-        # 'linear__positive': [True, False],
-        # 'svm__C': [1, 3, 5],
-        # 'svm__kernel': ['linear', 'poly', 'rbf', 'sigmoid', 'precomputed'],
-        # 'svm__gamma': ['scale', 'auto']
-        'scaler__with_std': [True, False],
-        'regressor__fit_intercept': [True, False],  # Include or exclude the intercept
-        'regressor__positive': [True, False]  # Normalize the features
-    }
 
-    grid_search = GridSearchCV(pipeline, param_grid, verbose=1, cv=10, scoring='neg_mean_squared_error')
+    grid_search = GridSearchCV(pipeline, grid_params, verbose=1, cv=10, scoring='neg_mean_squared_error')
     grid_search.fit(X_train, y_train)
-
-    print("The best hyperparameters: ", grid_search.best_params_)
 
     y_true = pd.concat([y_val, y_test]).values
 
@@ -142,8 +130,22 @@ def train_model(X_tuple, y_tuple):
     mse = mean_squared_error(y_true, y_pred)
     r2 = r2_score(y_true, y_pred)
 
-    print("Mean Squared Error (MSE) on validation and test set: ", mse)
-    print("R-squared (R^2) on validation and test set: ", r2)
+    return grid_search.best_params_, mse, r2
+
+
+def train_model(X_tuple, y_tuple, estimators_data):
+    best_mse = 1.0
+    best_r2 = 0.0
+    best_estimator = None
+    estimators = [(estimator_dict['estimator'], estimator_dict['grid_param']) for estimator_dict in estimators_data]
+    for estimator, grid_param in estimators:
+        best_params, mse, r2 = train_model_with_estimator(X_tuple, y_tuple, estimator, grid_param)
+        if mse < best_mse:
+            best_mse = mse
+            best_r2 = r2
+            best_estimator = (estimator, best_params)
+
+    return best_estimator, best_mse, best_r2
 
 
 if __name__ == '__main__':
@@ -160,10 +162,52 @@ if __name__ == '__main__':
 
     plot_dataset(X_train['Temperature_measured_max'], y_train, X_train['ambient_temperature'], label='Training Data')
 
-    # plot_dataset(X_train['time'], y_train, X_train['Temperature_measured_max'], label='Training Data')
-    # plot_dataset(X_val['time'], y_val, X_val['Temperature_measured_max'], label='Validation Data')
-    # plot_dataset(X_test['time'], y_test, X_test['Temperature_measured_max'], label='Test Data')
-
     dataframe.to_csv('experiment1_dataset_v1.csv', index=False)
 
-    train_model((X_train, X_val, X_test), (y_train, y_val, y_test))
+    estimators_data = [
+        {
+            'estimator': ('linear', LinearRegression()),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                'linear__fit_intercept': [True, False],
+                'linear__n_jobs': [1, 3, 5, 8],
+                'linear__positive': [True, False],
+            }
+        },
+        {
+            'estimator': ('ridge', Ridge()),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                'ridge__alpha': [0.1, 1.0, 10.0],
+            }
+        },
+        {
+            'estimator': ('lasso', Lasso()),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                'lasso__alpha': [0.1, 1.0, 10.0],
+            }
+        },
+        {
+            'estimator': ('random_forest', RandomForestRegressor()),
+            'grid_param': {
+                'random_forest__n_estimators': [100, 200, 300],
+                'random_forest__max_depth': [None, 10, 20, 30],
+            }
+        },
+        {
+            'estimator': ('svm', SVR()),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                'svm__C': [0.1, 1.0, 10.0],
+                'svm__kernel': ['linear', 'rbf', 'poly'],
+            }
+        }
+    ]
+
+    best_estimator, best_mse, best_r2 = train_model((X_train, X_val, X_test), (y_train, y_val, y_test), estimators_data)
+
+    print()
+    print(f'Best estimator: {best_estimator}')
+    print(f'Best MSE: {best_mse:0.3f} %')
+    print(f'Best R2: {best_r2:0.3f} %')
