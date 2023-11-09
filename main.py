@@ -9,9 +9,11 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
+from xgboost import XGBRegressor
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
+import warnings
 
 DATA_DIRECTORY_FILENAME = 'C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction\\data'
 
@@ -191,19 +193,30 @@ if __name__ == '__main__':
         {
             'estimator': ('random_forest', RandomForestRegressor()),
             'grid_param': {
-                'random_forest__n_estimators': [100, 200, 300],
-                'random_forest__max_depth': [None, 10, 20, 30],
+                'random_forest__n_estimators': [1, 3, 5],
+                'random_forest__max_depth': [None, 1, 3, 5],
             }
         },
         {
-            'estimator': ('svm', SVR()),
+            'estimator': ('xgboost', XGBRegressor()),
             'grid_param': {
-                'scaler__with_std': [True, False],
-                'svm__C': [0.1, 1.0, 10.0],
-                'svm__kernel': ['linear', 'rbf', 'poly'],
+                'xgboost__n_estimators': [50, 100, 200],
+                'xgboost__max_depth': [3, 4, 5],
+                'xgboost__learning_rate': [0.01, 0.1, 0.2],
             }
-        }
+        },
+        # {
+        #     'estimator': ('svm', SVR()),
+        #     'grid_param': {
+        #         'scaler__with_std': [True, False],
+        #         'svm__C': [0.1, 1.0, 10.0],
+        #         'svm__kernel': ['linear', 'rbf', 'poly'],
+        #     }
+        # }
     ]
+
+    # Suppress the FutureWarning related to is_sparse
+    warnings.filterwarnings("ignore", category=FutureWarning, module="xgboost")
 
     best_estimator, best_mse, best_r2 = train_model((X_train, X_val, X_test), (y_train, y_val, y_test), estimators_data)
 
