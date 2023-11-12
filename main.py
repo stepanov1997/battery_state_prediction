@@ -200,9 +200,9 @@ if __name__ == '__main__':
         {
             'estimator': ('xgboost', XGBRegressor()),
             'grid_param': {
-                'xgboost__n_estimators': [50, 100, 200],
-                'xgboost__max_depth': [3, 4, 5],
-                'xgboost__learning_rate': [0.01, 0.1, 0.2],
+                'xgboost__n_estimators': [50, 100, 300, 500],
+                'xgboost__max_depth': [3, 4, 5, 6],
+                'xgboost__learning_rate': [0.01, 0.1, 0.2, 0.3],
             }
         },
         # {
@@ -222,5 +222,5 @@ if __name__ == '__main__':
 
     print()
     print(f'Best estimator: {best_estimator}')
-    print(f'Best MSE: {best_mse:0.3f} %')
-    print(f'Best R2: {best_r2:0.3f} %')
+    print(f'Best MSE: {best_mse:0.5f} %')
+    print(f'Best R2: {best_r2:0.5f} %')
