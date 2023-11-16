@@ -13,9 +13,17 @@ from xgboost import XGBRegressor
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.pipeline import Pipeline
+from sklearn.neural_network import MLPRegressor
+from sklearn.exceptions import ConvergenceWarning
 import warnings
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, Conv1D, MaxPooling1D, Flatten
+from joblib import Memory
 
 DATA_DIRECTORY_FILENAME = 'C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction\\data'
+
+memory = Memory(location=f'{DATA_DIRECTORY_FILENAME}\\.cache', verbose=0)
 
 
 # noinspection PyShadowingNames
@@ -101,36 +109,53 @@ def plot_dataset(X, y, c, label):
     plt.show()
 
 
-def scale_dataset(X):
-    column_names = X.columns
-    scaler = StandardScaler()
-    # Fit the scaler to the data and transform the data
-    scaled_data = scaler.fit_transform(X)
-    return pd.DataFrame(scaled_data, columns=column_names), scaler
+# Add this function to create a neural network model
+def create_neural_network_model(input_shape, architecture='mlp'):
+    model = Sequential()
+
+    if architecture == 'mlp':
+        model.add(Dense(64, activation='relu', input_shape=(input_shape,)))
+        model.add(Dense(32, activation='relu'))
+    elif architecture == 'lstm':
+        model.add(LSTM(50, activation='relu', input_shape=(input_shape, 1)))
+    elif architecture == 'cnn':
+        model.add(Conv1D(64, kernel_size=3, activation='relu', input_shape=(input_shape, 1)))
+        model.add(MaxPooling1D(pool_size=2))
+        model.add(Flatten())
+
+    model.add(Dense(1, activation='linear'))  # Assuming you want a single output for regression
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    return model
 
 
-def select_features_in_dataset(X, y):
-    selector = SelectKBest(score_func=f_classif, k=5)
-    selected_features = selector.fit_transform(X, y)
-    cols_idxs = selector.get_support(indices=True)
-    return pd.DataFrame(selected_features, columns=X.columns[cols_idxs]), selector
-
-
-def train_model_with_estimator(X_tuple, y_tuple, estimator, grid_params):
+@memory.cache
+def train_model_with_estimator(X_tuple, y_tuple, estimator_tuple, grid_params):
     (X_train, X_val, X_test), (y_train, y_val, y_test) = X_tuple, y_tuple
-    pipeline = Pipeline([
-        ('scaler', StandardScaler()),
-        estimator
-    ])
 
-    grid_search = GridSearchCV(pipeline, grid_params, verbose=1, cv=10, scoring='neg_mean_squared_error')
-    grid_search.fit(X_train, y_train)
+    estimator_name, estimator = estimator_tuple
 
-    y_true = pd.concat([y_val, y_test]).values
+    global y_pred, grid_search
 
-    y_pred = grid_search.predict(pd.concat([X_val, X_test]))
-    mse = mean_squared_error(y_true, y_pred)
-    r2 = r2_score(y_true, y_pred)
+    if estimator_name == 'neural_network':
+        model = create_neural_network_model(X_train.shape[1], architecture=estimator)
+        history = model.fit(X_train, y_train, epochs=100, batch_size=32, validation_data=(X_val, y_val), verbose=1)
+        y_pred = model.predict(X_test)
+
+    else:
+        X_train_combined = pd.concat([X_train, X_val])
+        y_train_combined = pd.concat([y_train, y_val])
+
+        pipeline = Pipeline([
+            ('scaler', StandardScaler()),
+            estimator_tuple
+        ])
+
+        grid_search = GridSearchCV(pipeline, grid_params, verbose=1, cv=10, scoring='neg_mean_squared_error')
+        grid_search.fit(X_train_combined, y_train_combined)
+        y_pred = grid_search.predict(X_test)
+
+    mse = mean_squared_error(y_test, y_pred)
+    r2 = r2_score(y_test, y_pred)
 
     return grid_search.best_params_, mse, r2
 
@@ -139,15 +164,20 @@ def train_model(X_tuple, y_tuple, estimators_data):
     best_mse = 1.0
     best_r2 = 0.0
     best_estimator = None
+    results = {}
     estimators = [(estimator_dict['estimator'], estimator_dict['grid_param']) for estimator_dict in estimators_data]
     for estimator, grid_param in estimators:
         best_params, mse, r2 = train_model_with_estimator(X_tuple, y_tuple, estimator, grid_param)
+        if estimator[0] == 'neural_network':
+            results[f"{estimator[0]}-{estimator[1]}"] = (mse, r2)
+        else:
+            results[estimator[0]] = (mse, r2)
         if mse < best_mse:
             best_mse = mse
             best_r2 = r2
             best_estimator = (estimator, best_params)
 
-    return best_estimator, best_mse, best_r2
+    return results, best_estimator, best_mse, best_r2
 
 
 if __name__ == '__main__':
@@ -156,9 +186,6 @@ if __name__ == '__main__':
 
     X = dataframe.iloc[:, :-1]
     y = dataframe.iloc[:, -1]
-
-    # X, scaler = scale_dataset(X)
-    # X, selector = select_features_in_dataset(X, y)
 
     (X_train, y_train), (X_val, y_val), (X_test, y_test) = split_dataframe(X, y)
 
@@ -205,22 +232,41 @@ if __name__ == '__main__':
                 'xgboost__learning_rate': [0.01, 0.1, 0.2, 0.3],
             }
         },
-        # {
-        #     'estimator': ('svm', SVR()),
-        #     'grid_param': {
-        #         'scaler__with_std': [True, False],
-        #         'svm__C': [0.1, 1.0, 10.0],
-        #         'svm__kernel': ['linear', 'rbf', 'poly'],
-        #     }
-        # }
+        {
+            'estimator': ('svm', SVR()),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                'svm__C': [0.1, 1.0, 10.0],
+                'svm__kernel': ['linear', 'rbf', 'poly'],
+                'svm__max_iter': [1000]
+            }
+        },
+        # Neural networks
+        {
+            'estimator': ('neural_network', 'mlp'),
+            'grid_param': None
+        },
+        {
+            'estimator': ('neural_network', 'lstm'),
+            'grid_param': None
+        },
+        {
+            'estimator': ('neural_network', 'cnn'),
+            'grid_param': None
+        }
     ]
 
     # Suppress the FutureWarning related to is_sparse
     warnings.filterwarnings("ignore", category=FutureWarning, module="xgboost")
+    warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
-    best_estimator, best_mse, best_r2 = train_model((X_train, X_val, X_test), (y_train, y_val, y_test), estimators_data)
+    results, best_estimator, best_mse, best_r2 = train_model((X_train, X_val, X_test), (y_train, y_val, y_test),
+                                                             estimators_data)
 
     print()
     print(f'Best estimator: {best_estimator}')
     print(f'Best MSE: {best_mse:0.5f} %')
     print(f'Best R2: {best_r2:0.5f} %')
+
+    df = pd.DataFrame(results, index=['MSE', 'R2']).transpose()
+    df = df.sort_values(by='MSE')
