@@ -2,9 +2,11 @@ import numpy as np
 import scipy.io
 import pandas as pd
 import os
-from sklearn.model_selection import train_test_split
+from sklearn.base import BaseEstimator, TransformerMixin, clone
+from sklearn.utils.validation import check_is_fitted
+from sklearn.model_selection import train_test_split, GroupKFold
 from sklearn.feature_selection import SelectKBest, f_classif
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, FunctionTransformer
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.ensemble import RandomForestRegressor
@@ -20,154 +22,149 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM, Conv1D, MaxPooling1D, Flatten
 from joblib import Memory
+from functools import lru_cache
+import json
+from scipy.stats import kurtosis
+from scikeras.wrappers import KerasRegressor
 
 DATA_DIRECTORY_FILENAME = 'C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction\\data'
 
 memory = Memory(location=f'{DATA_DIRECTORY_FILENAME}\\.cache', verbose=0)
 
 
-# noinspection PyShadowingNames
-def create_dataframe_with_data(data_directory_filename):
-    df = pd.DataFrame()
-
-    battery_filenames = [
-        f'{root}\\{filename}'
-        for root, _, filenames in os.walk(data_directory_filename)
-        for filename in filenames
-        if filename.startswith('B00') and filename.endswith('.mat')
-    ]
-    print(battery_filenames)
-
-    for battery_filename in battery_filenames:
-        mat_data = scipy.io.loadmat(battery_filename, simplify_cells=True)
-
-        battery_data = mat_data[os.path.splitext(os.path.basename(battery_filename))[0]]
-        cycles = battery_data['cycle']
-
-        cycles = [cycle for cycle in cycles if cycle['type'] == 'discharge']
-
-        for cycle in cycles:
-            voltage_measured = cycle['data']['Voltage_measured']
-            cycle['Voltage_measured_max'] = max(voltage_measured)
-
-            current_measured = cycle['data']['Current_measured']
-            cycle['Current_measured_min'] = min(current_measured)
-            cycle['Current_measured_max'] = max(current_measured)
-
-            temperature_measured = cycle['data']['Temperature_measured']
-            cycle['Temperature_measured_min'] = min(temperature_measured)
-            cycle['Temperature_measured_max'] = max(temperature_measured)
-
-            current_charge = cycle['data'].get('Current_charge', cycle['data']['Current_load'])
-            cycle['Current_charge_min'] = min(current_charge)
-            cycle['Current_charge_max'] = max(current_charge)
-
-            voltage_charge = cycle['data'].get('Voltage_charge', cycle['data']['Voltage_load'])
-            cycle['Voltage_charge_min'] = min(voltage_charge)
-            cycle['Voltage_charge_max'] = max(voltage_charge)
-
-            time = cycle['data']['Time']
-            cycle['time'] = max(time)
-
-            cycle['health'] = cycle['data']['Capacity'] / 2.0
-
-            del cycle['data']
-            del cycle['type']
-
-        cycle_df = pd.DataFrame(cycles)
-
-        cycle_df['health'] = pd.to_numeric(cycle_df['health'], errors='coerce').apply(lambda x: 1 if x >= 1 else x)
-
-        cycle_df = cycle_df.dropna()
-
-        df = pd.concat([df, cycle_df], ignore_index=True)
-
-    df = df.round(3)
-
-    return df
+def read_data(file):
+    battery_name = os.path.splitext(os.path.basename(file))[0]
+    battery_data = scipy.io.loadmat(file, simplify_cells=True)
+    return battery_data[battery_name]
 
 
-# noinspection PyShadowingNames
-def split_dataframe(X, y):
-    # First, split the data into a training set (70%) and a temporary set (30%)
-    X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
+@lru_cache
+def parse_battery_data(file):
+    battery_df = pd.DataFrame(read_data(file))
+    battery_df['battery_filename'] = file
 
-    # Then, split the temporary set into a validation set (10%) and a test set (20%)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.666, random_state=42)
+    first_level_data = battery_df['cycle'].apply(pd.Series)
+    second_level_data = first_level_data['data'].apply(pd.Series)
 
-    # Now you have X_train, y_train for training, X_val, y_val for validation, and X_test, y_test for testing.
-    return (X_train, y_train), (X_val, y_val), (X_test, y_test)
+    battery_df = battery_df.join(first_level_data) \
+        .join(second_level_data)
+    battery_df = battery_df[(battery_df['type'] == 'discharge') & (battery_df['Capacity'].notna())]
+    return battery_df.drop(['cycle', 'data', 'type'], axis=1) \
+        .dropna(axis=1, how='all') \
+        .reset_index(drop=True)
 
 
-def plot_dataset(X, y, c, label):
-    plt.scatter(X, y, c=c, label='Temperature [°C]')
-    plt.colorbar()
-    plt.xlabel('Discharging time [s]')
-    plt.ylabel('SOH (state of health)')
-    plt.title(f'Scatter Plot of {label}')
-    plt.legend()
-    plt.show()
+def read_and_parse_files(files):
+    battery_dfs = [parse_battery_data(file) for file in files]
+    return pd.concat(battery_dfs, ignore_index=True)
+
+
+def prefit_preprocessing(df):
+    def describe_nested_data(column_name):
+        df[f'{column_name}_max'] = df[column_name].apply(np.max)
+        df[f'{column_name}_min'] = df[column_name].apply(np.min)
+        df[f'{column_name}_avg'] = df[column_name].apply(np.average)
+        df[f'{column_name}_std'] = df[column_name].apply(np.std)
+        # df[f'{column_name}_kurt'] = df[column_name].apply(kurtosis)
+        df.drop([column_name], axis=1, inplace=True)
+
+    for column_name in ['Voltage_measured', 'Current_measured', 'Temperature_measured', 'Current_load', 'Voltage_load']:
+        describe_nested_data(column_name)
+
+    df['Time_max'] = df['Time'].apply(np.max)
+    df = df.drop(['Time', 'time'], axis=1) \
+        .round(5)
+
+    y = pd.to_numeric(df['Capacity'] / 2, errors='coerce').apply(lambda health: 1 if health >= 1 else health)
+
+    X = df.drop(['Capacity'], axis=1) \
+        .drop(y[y.isna()].index) \
+        .dropna()
+
+    y = y.drop(y[y.isna()].index)
+
+    return X, y
 
 
 # Add this function to create a neural network model
-def create_neural_network_model(input_shape, architecture='mlp'):
-    model = Sequential()
+def create_mlp_nn_model(input_shape):
+    def f(optimizer='adam', neurons_layer_1=32, neurons_layer_2=16, activation='relu'):
+        model = Sequential()
+        model.add(Dense(neurons_layer_1, activation=activation, input_shape=(input_shape,)))
+        model.add(Dense(neurons_layer_2, activation=activation))
+        model.add(Dense(1, activation='linear'))
+        model.compile(optimizer=optimizer, loss='mean_squared_error')
+        return model
 
-    if architecture == 'mlp':
-        model.add(Dense(64, activation='relu', input_shape=(input_shape,)))
-        model.add(Dense(32, activation='relu'))
-    elif architecture == 'lstm':
-        model.add(LSTM(50, activation='relu', input_shape=(input_shape, 1)))
-    elif architecture == 'cnn':
-        model.add(Conv1D(64, kernel_size=3, activation='relu', input_shape=(input_shape, 1)))
+    return f
+
+
+def create_lstm_nn_model(input_shape):
+    def f(lstm_units=20, dense_units=10, activation='relu', optimizer='adam'):
+        model = Sequential()
+
+        model.add(LSTM(lstm_units, activation=activation, input_shape=(input_shape, 1)))
+        model.add(Dense(dense_units, activation=activation))
+        model.add(Dense(1, activation='linear'))
+
+        model.compile(optimizer=optimizer, loss='mean_squared_error')
+        return model
+
+    return f
+
+
+def create_cnn_model(input_shape):
+    def f(filters=32, kernel_size=3, dense_units=10, activation='relu', optimizer='adam'):
+        model = Sequential()
+
+        model.add(Conv1D(filters, kernel_size=kernel_size, activation=activation, input_shape=(input_shape, 1)))
         model.add(MaxPooling1D(pool_size=2))
         model.add(Flatten())
+        model.add(Dense(dense_units, activation=activation))
+        model.add(Dense(1, activation='linear'))
 
-    model.add(Dense(1, activation='linear'))  # Assuming you want a single output for regression
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    return model
+        model.compile(optimizer=optimizer, loss='mean_squared_error')
+        return model
+
+    return f
 
 
-@memory.cache
-def train_model_with_estimator(X_tuple, y_tuple, estimator_tuple, grid_params):
-    (X_train, X_val, X_test), (y_train, y_val, y_test) = X_tuple, y_tuple
+# @memory.cache
+def train_model_with_estimator(X_train, y_train, estimator_tuple, grid_params):
+    groups = X_train['battery_filename']
 
-    estimator_name, estimator = estimator_tuple
+    pipeline = Pipeline([
+        ('small_modifier', FunctionTransformer(func=lambda x: x.drop(['battery_filename'], axis=1).astype(np.float64))),
+        ('scaler', StandardScaler()),
+        estimator_tuple
+    ])
 
-    global y_pred, grid_search
+    group_kfold = GroupKFold(n_splits=10)
+    grid_search = GridSearchCV(pipeline, grid_params, verbose=2, cv=group_kfold, scoring='neg_mean_squared_error', n_jobs=-1)
+    grid_search.fit(X_train, y_train.astype(np.float64), groups=groups)
 
-    if estimator_name == 'neural_network':
-        model = create_neural_network_model(X_train.shape[1], architecture=estimator)
-        history = model.fit(X_train, y_train, epochs=100, batch_size=32, validation_data=(X_val, y_val), verbose=1)
-        y_pred = model.predict(X_test)
+    return grid_search
 
-    else:
-        X_train_combined = pd.concat([X_train, X_val])
-        y_train_combined = pd.concat([y_train, y_val])
 
-        pipeline = Pipeline([
-            ('scaler', StandardScaler()),
-            estimator_tuple
-        ])
-
-        grid_search = GridSearchCV(pipeline, grid_params, verbose=1, cv=10, scoring='neg_mean_squared_error')
-        grid_search.fit(X_train_combined, y_train_combined)
-        y_pred = grid_search.predict(X_test)
+def calculate_errors_on_test_set(grid_search, X_test, y_test):
+    y_pred = grid_search.predict(X_test)
 
     mse = mean_squared_error(y_test, y_pred)
     r2 = r2_score(y_test, y_pred)
 
-    return grid_search.best_params_, mse, r2
+    return mse, r2
 
 
-def train_model(X_tuple, y_tuple, estimators_data):
+def train_model(X_train, y_train, X_test, y_test, estimators_data):
     best_mse = 1.0
     best_r2 = 0.0
     best_estimator = None
     results = {}
     estimators = [(estimator_dict['estimator'], estimator_dict['grid_param']) for estimator_dict in estimators_data]
     for estimator, grid_param in estimators:
-        best_params, mse, r2 = train_model_with_estimator(X_tuple, y_tuple, estimator, grid_param)
+        grid_search = train_model_with_estimator(X_train, y_train, estimator, grid_param)
+        best_params = grid_search.best_params_
+        mse, r2 = calculate_errors_on_test_set(grid_search, X_test, y_test)
         if estimator[0] == 'neural_network':
             results[f"{estimator[0]}-{estimator[1]}"] = (mse, r2)
         else:
@@ -181,92 +178,146 @@ def train_model(X_tuple, y_tuple, estimators_data):
 
 
 if __name__ == '__main__':
-    dataframe = create_dataframe_with_data(DATA_DIRECTORY_FILENAME)
-    print(dataframe)
+    battery_filenames = pd.Series([
+        f'{root}\\{filename}'
+        for root, _, filenames in os.walk(DATA_DIRECTORY_FILENAME)
+        for filename in filenames
+        if filename.startswith('B00') and filename.endswith('.mat')
+    ])
 
-    X = dataframe.iloc[:, :-1]
-    y = dataframe.iloc[:, -1]
+    train, test = train_test_split(battery_filenames, test_size=0.2, random_state=42)
 
-    (X_train, y_train), (X_val, y_val), (X_test, y_test) = split_dataframe(X, y)
+    # Fit preprocessing pipeline on training data
+    preprocessing_pipeline = Pipeline([
+        ('read_and_parse_files', FunctionTransformer(func=read_and_parse_files)),
+        ('prefit_preprocessing', FunctionTransformer(func=prefit_preprocessing))
+    ])
 
-    plot_dataset(X_train['Temperature_measured_max'], y_train, X_train['ambient_temperature'], label='Training Data')
+    # Transform both training and test data using the fitted pipeline
+    X_train, y_train = preprocessing_pipeline.fit_transform(train)
+    X_test, y_test = preprocessing_pipeline.transform(test)
 
-    dataframe.to_csv('experiment1_dataset_v1.csv', index=False)
+    input_shape = X_train.shape[1] - 1
 
     estimators_data = [
         {
-            'estimator': ('linear', LinearRegression()),
+            'estimator': ('linear', LinearRegression(n_jobs=-1)),
             'grid_param': {
                 'scaler__with_std': [True, False],
-                'linear__fit_intercept': [True, False],
-                'linear__n_jobs': [1, 3, 5, 8],
-                'linear__positive': [True, False],
+                # 'linear__fit_intercept': [True, False],
+                # 'linear__positive': [True, False]
             }
         },
         {
             'estimator': ('ridge', Ridge()),
             'grid_param': {
                 'scaler__with_std': [True, False],
-                'ridge__alpha': [0.1, 1.0, 10.0],
+                # 'ridge__alpha': [0.1, 1.0, 10.0, 100.0],
+                # 'ridge__fit_intercept': [True, False],
+                # 'ridge__tol': [1e-4, 1e-3, 1e-2],
+                # 'ridge__solver': ['auto', 'svd', 'cholesky', 'lsqr', 'sparse_cg', 'sag', 'saga']
             }
         },
         {
             'estimator': ('lasso', Lasso()),
             'grid_param': {
                 'scaler__with_std': [True, False],
-                'lasso__alpha': [0.1, 1.0, 10.0],
+                # 'lasso__alpha': [0.0001, 0.001, 0.01, 0.1, 1, 10],
+                # 'lasso__fit_intercept': [True, False],
+                # 'lasso__tol': [1e-4, 1e-3, 1e-2],
+                # 'lasso__selection': ['cyclic', 'random'],
             }
         },
         {
-            'estimator': ('random_forest', RandomForestRegressor()),
-            'grid_param': {
-                'random_forest__n_estimators': [1, 3, 5],
-                'random_forest__max_depth': [None, 1, 3, 5],
-            }
-        },
-        {
-            'estimator': ('xgboost', XGBRegressor()),
-            'grid_param': {
-                'xgboost__n_estimators': [50, 100, 300, 500],
-                'xgboost__max_depth': [3, 4, 5, 6],
-                'xgboost__learning_rate': [0.01, 0.1, 0.2, 0.3],
-            }
-        },
-        {
-            'estimator': ('svm', SVR()),
+            'estimator': ('random_forest', RandomForestRegressor(n_jobs=-1)),
             'grid_param': {
                 'scaler__with_std': [True, False],
-                'svm__C': [0.1, 1.0, 10.0],
-                'svm__kernel': ['linear', 'rbf', 'poly'],
-                'svm__max_iter': [1000]
+                # 'random_forest__n_estimators': [1, 3, 5],
+                # 'random_forest__max_depth': [None, 3, 5, 10],
+                # 'random_forest__min_samples_split': [2, 4, 6],
+                # 'random_forest__min_samples_leaf': [1, 2, 4],
+                # 'random_forest__max_features': ['sqrt', 'log2'],
+                # 'random_forest__bootstrap': [True, False],
+            }
+        },
+        {
+            'estimator': ('xgboost', XGBRegressor(n_jobs=-1)),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                # 'xgboost__n_estimators': [50, 100, 300, 500],
+                # 'xgboost__max_depth': [3, 4, 5, 6],
+                # 'xgboost__learning_rate': [0.01, 0.1, 0.2, 0.3],
+                # 'xgboost__min_child_weight': [1, 2, 3, 4],
+                # 'xgboost__gamma': [0, 0.1, 0.2, 0.3, 0.4],
+                # 'xgboost__subsample': [0.5, 0.75, 1],
+                # 'xgboost__colsample_bytree': [0.5, 0.75, 1],
+                # 'xgboost__reg_alpha': [0, 0.1, 0.2, 0.5, 1],
+                # 'xgboost__reg_lambda': [0, 0.1, 0.5, 1]
+            }
+        },
+        {
+            'estimator': ('svm', SVR(max_iter=1000)),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                # 'svm__C': [0.1, 1.0, 10.0],  # Parametar regularizacije
+                # 'svm__kernel': ['linear', 'rbf', 'poly'],  # Tip jezgra
+                # 'svm__gamma': ['scale', 'auto', 0.1, 1, 10],  # Koeficijent za 'rbf', 'poly' i 'sigmoid'
+                # 'svm__degree': [1, 2, 3, 4, 5],  # Stepen za 'poly' jezgro
+                # 'svm__coef0': [0.0, 0.1, 0.5, 1],  # Nezavisni termin u kernel funkciji
+                # 'svm__epsilon': [0.1, 0.2, 0.5, 1]  # Epsilon u epsilon-SVR modelu
             }
         },
         # Neural networks
         {
-            'estimator': ('neural_network', 'mlp'),
-            'grid_param': None
+            'estimator': ('mlp-nn', KerasRegressor(model=create_mlp_nn_model(input_shape))),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                # 'mlp-nn__epochs': [50, 100, 150],
+                # 'mlp-nn__batch_size': [64, 128, 256],
+                # 'mlp-nn__model__neurons_layer_1': [32, 64, 128],
+                # 'mlp-nn__model__neurons_layer_2': [16, 32, 64],
+                # 'mlp-nn__model__activation': ['relu', 'tanh', 'sigmoid'],
+                'mlp-nn__model__optimizer': ['rmsprop', 'adam'],
+            }
         },
         {
-            'estimator': ('neural_network', 'lstm'),
-            'grid_param': None
+            'estimator': ('lstm-nn', KerasRegressor(model=create_lstm_nn_model(input_shape))),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                # 'lstm-nn__epochs': [50, 100, 150],
+                # 'lstm-nn__batch_size': [64, 128, 256],
+                # 'lstm-nn__model__lstm_units': [20, 50, 100],
+                # 'lstm-nn__model__dense_units': [10, 20, 50],
+                # 'lstm-nn__model__activation': ['relu', 'tanh', 'sigmoid'],
+                'lstm-nn__model__optimizer': ['rmsprop', 'adam']
+            }
         },
         {
-            'estimator': ('neural_network', 'cnn'),
-            'grid_param': None
+            'estimator': ('cnn-nn', KerasRegressor(model=create_cnn_model(input_shape))),
+            'grid_param': {
+                'scaler__with_std': [True, False],
+                # 'cnn-nn__epochs': [50, 100, 150],
+                # 'cnn-nn__batch_size': [64, 128, 256],
+                # 'cnn-nn__model__filters': [32, 64, 128],
+                # 'cnn-nn__model__kernel_size': [2, 3, 5],
+                # 'cnn-nn__model__dense_units': [10, 20, 50],
+                # 'cnn-nn__model__activation': ['relu', 'tanh', 'sigmoid'],
+                'cnn-nn__model__optimizer': ['rmsprop', 'adam']
+            }
         }
     ]
 
-    # Suppress the FutureWarning related to is_sparse
-    warnings.filterwarnings("ignore", category=FutureWarning, module="xgboost")
-    warnings.filterwarnings("ignore", category=ConvergenceWarning)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning, module="xgboost")
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        warnings.filterwarnings("ignore", category=ConvergenceWarning, module="sklearn")
 
-    results, best_estimator, best_mse, best_r2 = train_model((X_train, X_val, X_test), (y_train, y_val, y_test),
-                                                             estimators_data)
+        results, best_estimator, best_mse, best_r2 = train_model(X_train, y_train, X_test, y_test, estimators_data)
 
     print()
     print(f'Best estimator: {best_estimator}')
     print(f'Best MSE: {best_mse:0.5f} %')
     print(f'Best R2: {best_r2:0.5f} %')
 
-    df = pd.DataFrame(results, index=['MSE', 'R2']).transpose()
-    df = df.sort_values(by='MSE')
+    results_df = pd.DataFrame(results, index=['MSE', 'R2']).transpose()
+    results_df = results_df.sort_values(by='MSE')
