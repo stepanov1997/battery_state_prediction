@@ -26,6 +26,9 @@ from functools import lru_cache
 import json
 from scipy.stats import kurtosis
 from scikeras.wrappers import KerasRegressor
+from datetime import datetime
+import dill as pickle
+import time
 
 DATA_DIRECTORY_FILENAME = 'C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction\\data'
 
@@ -57,6 +60,70 @@ def parse_battery_data(file):
 def read_and_parse_files(files):
     battery_dfs = [parse_battery_data(file) for file in files]
     return pd.concat(battery_dfs, ignore_index=True)
+
+
+def create_result_folders():
+    main_folder = os.path.join(DATA_DIRECTORY_FILENAME, 'results')
+    if not os.path.exists(main_folder):
+        os.makedirs(main_folder)
+
+    timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    subfolder = os.path.join(main_folder, timestamp)
+    os.makedirs(subfolder)
+
+    return subfolder, timestamp
+
+
+def serialize_preprocessor(directory, preprocessor):
+    with open(os.path.join(directory, 'preprocessor.pkl'), 'wb') as file:
+        pickle.dump(preprocessor, file)
+
+
+def serialize_estimator(subfolder, name, estimator, statistics):
+    estimators_subfolder = os.path.join(subfolder, "estimators")
+
+    if not os.path.exists(estimators_subfolder):
+        os.makedirs(estimators_subfolder)
+
+    estimator_filename = f'estimator_{statistics["mse"]}_{name}'
+    with open(os.path.join(estimators_subfolder, f'{estimator_filename}.pkl'), 'wb') as file:
+        pickle.dump(estimator, file)
+
+    with open(os.path.join(estimators_subfolder, f'{estimator_filename}_statistics.json'), 'w') as file:
+        json.dump(statistics, file)
+
+
+def serialize_results(subfolder, results_df):
+    result_json = json.loads(results_df.to_json())
+
+    with open(os.path.join(subfolder, "results.json"), "w") as f:
+        json.dump(result_json, f, indent=4)
+
+
+def plot_and_save_charts(subfolder, results_df):
+    # Kreiranje DataFrame-a
+    df_fit_duration = pd.DataFrame({'model': results_df.index, 'fit_duration': results_df['fit_duration']})
+    df_prediction_duration = pd.DataFrame(
+        {'model': results_df.index, 'prediction_duration': results_df['prediction_duration']})
+    df_mse = pd.DataFrame({'model': results_df.index, 'mse': results_df['mse']})
+    df_r2 = pd.DataFrame({'model': results_df.index, 'r2': results_df['r2']})
+
+    def plot_and_save_chart(df, y_label, file_name):
+        plt.figure(figsize=(10, 6))
+        plt.plot(df['model'], df.iloc[:, 1], marker='o')
+        plt.xticks(rotation=45)
+        plt.ylabel(y_label)
+        plt.title(f'{y_label} by model')
+
+        # Čuvanje grafikona kao slike
+        plt.savefig(os.path.join(subfolder, f"{file_name}.png"))
+        plt.show()
+
+    # Plotovanje grafikona i čuvanje kao slike
+    plot_and_save_chart(df_fit_duration, 'Fit Duration', 'fit_duration_chart')
+    plot_and_save_chart(df_prediction_duration, 'Prediction Duration', 'prediction_duration_chart')
+    plot_and_save_chart(df_mse, 'MSE', 'mse_chart')
+    plot_and_save_chart(df_r2, 'R2', 'r2_chart')
 
 
 def prefit_preprocessing(df):
@@ -129,7 +196,6 @@ def create_cnn_model(input_shape):
     return f
 
 
-# @memory.cache
 def train_model_with_estimator(X_train, y_train, estimator_tuple, grid_params):
     groups = X_train['battery_filename']
 
@@ -140,7 +206,8 @@ def train_model_with_estimator(X_train, y_train, estimator_tuple, grid_params):
     ])
 
     group_kfold = GroupKFold(n_splits=10)
-    grid_search = GridSearchCV(pipeline, grid_params, verbose=2, cv=group_kfold, scoring='neg_mean_squared_error', n_jobs=-1)
+    grid_search = GridSearchCV(pipeline, grid_params, verbose=2, cv=group_kfold, scoring='neg_mean_squared_error',
+                               n_jobs=-1)
     grid_search.fit(X_train, y_train.astype(np.float64), groups=groups)
 
     return grid_search
@@ -149,32 +216,48 @@ def train_model_with_estimator(X_train, y_train, estimator_tuple, grid_params):
 def calculate_errors_on_test_set(grid_search, X_test, y_test):
     y_pred = grid_search.predict(X_test)
 
-    mse = mean_squared_error(y_test, y_pred)
+    mse = round(mean_squared_error(y_test, y_pred), 4)
     r2 = r2_score(y_test, y_pred)
 
     return mse, r2
 
 
-def train_model(X_train, y_train, X_test, y_test, estimators_data):
-    best_mse = 1.0
-    best_r2 = 0.0
-    best_estimator = None
+def train_model(train_folder, X_train, y_train, X_test, y_test, estimators_data):
+    best_global_estimator_name = None
+    best_global_mse = 1.0
+    best_global_r2 = 0.0
+    best_global_estimator = None
     results = {}
     estimators = [(estimator_dict['estimator'], estimator_dict['grid_param']) for estimator_dict in estimators_data]
     for estimator, grid_param in estimators:
+        fit_start_time = time.perf_counter()
         grid_search = train_model_with_estimator(X_train, y_train, estimator, grid_param)
-        best_params = grid_search.best_params_
-        mse, r2 = calculate_errors_on_test_set(grid_search, X_test, y_test)
-        if estimator[0] == 'neural_network':
-            results[f"{estimator[0]}-{estimator[1]}"] = (mse, r2)
-        else:
-            results[estimator[0]] = (mse, r2)
-        if mse < best_mse:
-            best_mse = mse
-            best_r2 = r2
-            best_estimator = (estimator, best_params)
+        fit_duration = time.perf_counter() - fit_start_time
 
-    return results, best_estimator, best_mse, best_r2
+        prediction_start_time = time.perf_counter()
+        best_local_mse, best_local_r2 = calculate_errors_on_test_set(grid_search, X_test, y_test)
+        prediction_duration = time.perf_counter() - prediction_start_time
+
+        best_local_estimator = grid_search.best_estimator_
+        estimator_name = estimator[0]
+        statistics = {
+            'name': estimator_name,
+            'best_params': grid_search.best_params_,
+            'fit_duration': fit_duration,
+            'prediction_duration': prediction_duration,
+            'mse': best_local_mse,
+            'r2': best_local_r2,
+        }
+        serialize_estimator(train_folder, estimator_name, best_local_estimator, statistics)
+        results[estimator_name] = statistics
+        if best_local_mse >= best_global_mse:
+            continue
+        best_global_mse = best_local_mse
+        best_global_r2 = best_local_r2
+        best_global_estimator_name = estimator_name
+        best_global_estimator = best_local_estimator
+
+    return results, best_global_estimator_name, best_global_estimator, best_global_mse, best_global_r2
 
 
 if __name__ == '__main__':
@@ -198,6 +281,9 @@ if __name__ == '__main__':
     X_test, y_test = preprocessing_pipeline.transform(test)
 
     input_shape = X_train.shape[1] - 1
+
+    train_folder, timestamp = create_result_folders()
+    serialize_preprocessor(train_folder, preprocessing_pipeline)
 
     estimators_data = [
         {
@@ -312,12 +398,21 @@ if __name__ == '__main__':
         warnings.filterwarnings("ignore", category=DeprecationWarning)
         warnings.filterwarnings("ignore", category=ConvergenceWarning, module="sklearn")
 
-        results, best_estimator, best_mse, best_r2 = train_model(X_train, y_train, X_test, y_test, estimators_data)
+        results, best_global_estimator_name, best_global_estimator, best_global_mse, best_global_r2 = train_model(
+            train_folder, X_train, y_train, X_test, y_test, estimators_data
+        )
+        old_folder = train_folder
+        train_folder = f"{old_folder}-{best_global_estimator_name}-{best_global_mse}"
+        os.rename(old_folder, train_folder)
 
     print()
-    print(f'Best estimator: {best_estimator}')
-    print(f'Best MSE: {best_mse:0.5f} %')
-    print(f'Best R2: {best_r2:0.5f} %')
+    print(f'Best estimator: {best_global_estimator_name}')
+    print(f'Best MSE: {best_global_mse:0.5f} %')
+    print(f'Best R2: {best_global_r2:0.5f} %')
 
-    results_df = pd.DataFrame(results, index=['MSE', 'R2']).transpose()
-    results_df = results_df.sort_values(by='MSE')
+    results_df = pd.DataFrame.from_dict(results, orient='index') \
+        .drop(['name'], axis=1) \
+        .sort_values(by='mse')
+
+    serialize_results(train_folder, results_df)
+    plot_and_save_charts(train_folder, results_df)
