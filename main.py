@@ -1,50 +1,46 @@
-import numpy as np
-import scipy.io
-import pandas as pd
-import os
-from sklearn.base import BaseEstimator, TransformerMixin, clone
-from sklearn.utils.validation import check_is_fitted
-from sklearn.model_selection import train_test_split, GroupKFold
-from sklearn.feature_selection import SelectKBest, f_classif
-from sklearn.preprocessing import MinMaxScaler, StandardScaler, FunctionTransformer
-import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.svm import SVR
-from xgboost import XGBRegressor
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.pipeline import Pipeline
-from sklearn.neural_network import MLPRegressor
-from sklearn.exceptions import ConvergenceWarning
-import warnings
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, Conv1D, MaxPooling1D, Flatten
-from joblib import Memory
-from functools import lru_cache
 import json
-from scipy.stats import kurtosis
-from scikeras.wrappers import KerasRegressor
-from datetime import datetime
-import dill as pickle
+import os
 import time
-from catboost import CatBoostRegressor
+import warnings
+from datetime import datetime
+from functools import lru_cache
 
+import dill as pickle
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scipy.io
+from catboost import CatBoostRegressor
+from joblib import Memory
+from scikeras.wrappers import KerasRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import train_test_split, GroupKFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, FunctionTransformer
+from sklearn.svm import SVR
+from tensorflow.keras.layers import Dense, LSTM, Conv1D, MaxPooling1D, Flatten
+from tensorflow.keras.models import Sequential
+from xgboost import XGBRegressor
+
+# Constants for directory paths
 DATA_DIRECTORY_FILENAME = 'C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction\\data'
 
-memory = Memory(location=f'{DATA_DIRECTORY_FILENAME}\\.cache', verbose=0)
 
-
-def read_data(file):
+# Reads and loads battery data from a file
+def read_battery_data(file):
     battery_name = os.path.splitext(os.path.basename(file))[0]
     battery_data = scipy.io.loadmat(file, simplify_cells=True)
     return battery_data[battery_name]
 
 
+# Parses battery data into a DataFrame
 @lru_cache
 def parse_battery_data(file):
-    battery_df = pd.DataFrame(read_data(file))
+    battery_df = pd.DataFrame(read_battery_data(file))
     battery_df['battery_filename'] = file
 
     first_level_data = battery_df['cycle'].apply(pd.Series)
@@ -58,12 +54,14 @@ def parse_battery_data(file):
         .reset_index(drop=True)
 
 
-def read_and_parse_files(files):
+# Reads and parses multiple battery data files
+def read_and_parse_multiple_files(files):
     battery_dfs = [parse_battery_data(file) for file in files]
     return pd.concat(battery_dfs, ignore_index=True)
 
 
-def create_result_folders():
+# Creates necessary folders for storing results
+def setup_result_folders():
     main_folder = os.path.join(DATA_DIRECTORY_FILENAME, 'results')
     if not os.path.exists(main_folder):
         os.makedirs(main_folder)
@@ -75,12 +73,14 @@ def create_result_folders():
     return subfolder, timestamp
 
 
-def serialize_preprocessor(directory, preprocessor):
+# Serializes the preprocessing pipeline
+def save_preprocessor(directory, preprocessor):
     with open(os.path.join(directory, 'preprocessor.pkl'), 'wb') as file:
         pickle.dump(preprocessor, file)
 
 
-def serialize_estimator(subfolder, name, estimator, statistics):
+# Serializes the trained estimator and its statistics
+def save_trained_estimator(subfolder, name, estimator, statistics):
     estimators_subfolder = os.path.join(subfolder, "estimators")
 
     if not os.path.exists(estimators_subfolder):
@@ -94,15 +94,16 @@ def serialize_estimator(subfolder, name, estimator, statistics):
         json.dump(statistics, file)
 
 
-def serialize_results(subfolder, results_df):
+# Serializes the results of model training into JSON
+def save_training_results(subfolder, results_df):
     result_json = json.loads(results_df.to_json())
 
     with open(os.path.join(subfolder, "results.json"), "w") as f:
         json.dump(result_json, f, indent=4)
 
 
-def plot_and_save_charts(subfolder, results_df):
-    # Kreiranje DataFrame-a
+# Generates and saves performance charts of the models
+def generate_and_save_performance_charts(subfolder, results_df):
     df_fit_duration = pd.DataFrame({'model': results_df.index, 'fit_duration': results_df['fit_duration']})
     df_prediction_duration = pd.DataFrame(
         {'model': results_df.index, 'prediction_duration': results_df['prediction_duration']})
@@ -116,18 +117,17 @@ def plot_and_save_charts(subfolder, results_df):
         plt.ylabel(y_label)
         plt.title(f'{y_label} by model')
 
-        # Čuvanje grafikona kao slike
         plt.savefig(os.path.join(subfolder, f"{file_name}.png"))
         plt.show()
 
-    # Plotovanje grafikona i čuvanje kao slike
     plot_and_save_chart(df_fit_duration, 'Fit Duration', 'fit_duration_chart')
     plot_and_save_chart(df_prediction_duration, 'Prediction Duration', 'prediction_duration_chart')
     plot_and_save_chart(df_mse, 'MSE', 'mse_chart')
     plot_and_save_chart(df_r2, 'R2', 'r2_chart')
 
 
-def prefit_preprocessing(df):
+# Preprocesses the data before fitting the models
+def preprocess_data_before_fitting(df):
     def describe_nested_data(column_name):
         df[f'{column_name}_max'] = df[column_name].apply(np.max)
         df[f'{column_name}_min'] = df[column_name].apply(np.min)
@@ -154,8 +154,8 @@ def prefit_preprocessing(df):
     return X, y
 
 
-# Add this function to create a neural network model
-def create_mlp_nn_model(input_shape):
+# Creates a Multi-Layer Perceptron Neural Network model
+def create_mlp_neural_network_model(input_shape):
     def f(optimizer='adam', neurons_layer_1=32, neurons_layer_2=16, activation='relu'):
         model = Sequential()
         model.add(Dense(neurons_layer_1, activation=activation, input_shape=(input_shape,)))
@@ -167,7 +167,8 @@ def create_mlp_nn_model(input_shape):
     return f
 
 
-def create_lstm_nn_model(input_shape):
+# Creates an LSTM Neural Network model
+def create_lstm_neural_network_model(input_shape):
     def f(lstm_units=20, dense_units=10, activation='relu', optimizer='adam'):
         model = Sequential()
 
@@ -181,6 +182,7 @@ def create_lstm_nn_model(input_shape):
     return f
 
 
+# Creates a Convolutional Neural Network model
 def create_cnn_model(input_shape):
     def f(filters=32, kernel_size=3, dense_units=10, activation='relu', optimizer='adam'):
         model = Sequential()
@@ -197,7 +199,8 @@ def create_cnn_model(input_shape):
     return f
 
 
-def train_model_with_estimator(X_train, y_train, estimator_tuple, grid_params):
+# Trains a model using a specified estimator
+def train_model_with_specified_estimator(X_train, y_train, estimator_tuple, grid_params):
     groups = X_train['battery_filename']
 
     pipeline = Pipeline([
@@ -208,14 +211,15 @@ def train_model_with_estimator(X_train, y_train, estimator_tuple, grid_params):
 
     group_kfold = GroupKFold(n_splits=5)
     grid_search = GridSearchCV(pipeline, grid_params, verbose=10, cv=group_kfold,
-                                           scoring='neg_mean_squared_error',
-                                           n_jobs=-1)
+                               scoring='neg_mean_squared_error',
+                               n_jobs=-1)
     grid_search.fit(X_train, y_train.astype(np.float64), groups=groups)
 
     return grid_search
 
 
-def calculate_errors_on_test_set(grid_search, X_test, y_test):
+# Calculates error metrics on the test dataset
+def compute_error_metrics_on_test_set(grid_search, X_test, y_test):
     y_pred = grid_search.predict(X_test)
 
     mse = round(mean_squared_error(y_test, y_pred), 4)
@@ -224,7 +228,8 @@ def calculate_errors_on_test_set(grid_search, X_test, y_test):
     return mse, r2
 
 
-def train_model(train_folder, X_train, y_train, X_test, y_test, estimators_data):
+# Main method to train models and evaluate their performance
+def main_model_training_process(train_folder, X_train, y_train, X_test, y_test, estimators_data):
     best_global_estimator_name = None
     best_global_mse = 1.0
     best_global_r2 = 0.0
@@ -233,11 +238,11 @@ def train_model(train_folder, X_train, y_train, X_test, y_test, estimators_data)
     estimators = [(estimator_dict['estimator'], estimator_dict['grid_param']) for estimator_dict in estimators_data]
     for estimator, grid_param in estimators:
         fit_start_time = time.perf_counter()
-        grid_search = train_model_with_estimator(X_train, y_train, estimator, grid_param)
+        grid_search = train_model_with_specified_estimator(X_train, y_train, estimator, grid_param)
         fit_duration = time.perf_counter() - fit_start_time
 
         prediction_start_time = time.perf_counter()
-        best_local_mse, best_local_r2 = calculate_errors_on_test_set(grid_search, X_test, y_test)
+        best_local_mse, best_local_r2 = compute_error_metrics_on_test_set(grid_search, X_test, y_test)
         prediction_duration = time.perf_counter() - prediction_start_time
 
         best_local_estimator = grid_search.best_estimator_
@@ -250,7 +255,7 @@ def train_model(train_folder, X_train, y_train, X_test, y_test, estimators_data)
             'mse': best_local_mse,
             'r2': best_local_r2,
         }
-        serialize_estimator(train_folder, estimator_name, best_local_estimator, statistics)
+        save_trained_estimator(train_folder, estimator_name, best_local_estimator, statistics)
         results[estimator_name] = statistics
         if best_local_mse >= best_global_mse:
             continue
@@ -274,8 +279,8 @@ if __name__ == '__main__':
 
     # Fit preprocessing pipeline on training data
     preprocessing_pipeline = Pipeline([
-        ('read_and_parse_files', FunctionTransformer(func=read_and_parse_files)),
-        ('prefit_preprocessing', FunctionTransformer(func=prefit_preprocessing))
+        ('read_and_parse_files', FunctionTransformer(func=read_and_parse_multiple_files)),
+        ('prefit_preprocessing', FunctionTransformer(func=preprocess_data_before_fitting))
     ])
 
     # Transform both training and test data using the fitted pipeline
@@ -284,8 +289,8 @@ if __name__ == '__main__':
 
     input_shape = X_train.shape[1] - 1
 
-    train_folder, timestamp = create_result_folders()
-    serialize_preprocessor(train_folder, preprocessing_pipeline)
+    train_folder, timestamp = setup_result_folders()
+    save_preprocessor(train_folder, preprocessing_pipeline)
 
     estimators_data = [
         {
@@ -433,7 +438,7 @@ if __name__ == '__main__':
         },
         # Neural networks
         {
-            'estimator': ('mlp-nn', KerasRegressor(model=create_mlp_nn_model(input_shape))),
+            'estimator': ('mlp-nn', KerasRegressor(model=create_mlp_neural_network_model(input_shape))),
             'grid_param': {
                 # 'scaler__with_std': [True, False],
                 # 'mlp-nn__epochs': [50],
@@ -454,7 +459,7 @@ if __name__ == '__main__':
             }
         },
         {
-            'estimator': ('lstm-nn', KerasRegressor(model=create_lstm_nn_model(input_shape))),
+            'estimator': ('lstm-nn', KerasRegressor(model=create_lstm_neural_network_model(input_shape))),
             'grid_param': {
                 # 'scaler__with_std': [True, False],
                 # 'lstm-nn__epochs': [50],
@@ -504,7 +509,7 @@ if __name__ == '__main__':
         warnings.filterwarnings("ignore", category=DeprecationWarning)
         warnings.filterwarnings("ignore", category=ConvergenceWarning, module="sklearn")
 
-        results, best_global_estimator_name, best_global_estimator, best_global_mse, best_global_r2 = train_model(
+        results, best_global_estimator_name, best_global_estimator, best_global_mse, best_global_r2 = main_model_training_process(
             train_folder, X_train, y_train, X_test, y_test, estimators_data
         )
         old_folder = train_folder
@@ -520,5 +525,5 @@ if __name__ == '__main__':
         .drop(['name'], axis=1) \
         .sort_values(by='mse')
 
-    serialize_results(train_folder, results_df)
-    plot_and_save_charts(train_folder, results_df)
+    save_training_results(train_folder, results_df)
+    generate_and_save_performance_charts(train_folder, results_df)

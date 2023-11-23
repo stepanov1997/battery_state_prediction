@@ -1,15 +1,16 @@
+import os
+
 import dill as pickle
 import pandas as pd
-import os
 import numpy as np
 from sklearn.metrics import mean_squared_error, r2_score
-from main import parse_battery_data, read_data
+from main import read_battery_data, parse_battery_data
 
 data_path = "C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction\\data"
 results_path = os.path.join(data_path, "results")
-specific_result_path = os.path.join(results_path, "2023-11-19-21-47-57-xgboost-0.0029")
+specific_result_path = os.path.join(results_path, "2023-11-23-23-28-03-mlp-nn-0.0011")
 
-estimator_path = os.path.join(specific_result_path, 'estimators\\estimator_0.0029_xgboost.pkl')
+estimator_path = os.path.join(specific_result_path, 'estimators\\estimator_0.0042_xgboost.pkl')
 preprocessor_path = os.path.join(specific_result_path, 'preprocessor.pkl')
 test_data_path = os.path.join(data_path, '5. Battery Data Set\\6. BatteryAgingARC_53_54_55_56\\B0054.mat')
 
@@ -33,7 +34,7 @@ if __name__ == '__main__':
     print(df)
     print()
 
-    mse = round(mean_squared_error(y_test, predictions), 4)
+    mse = round(mean_squared_error(y_test, predictions), 5)
     print(f'MSE = {mse}')
 
     print()
