@@ -359,16 +359,28 @@ if __name__ == '__main__':
         {
             'estimator': ('catboost', CatBoostRegressor()),
             'grid_param': {
-                'scaler__with_std': [True, False],
-                'catboost__depth': [4, 5, 6],
-                'catboost__learning_rate': [0.01, 0.1, 0.2],
-                'catboost__l2_leaf_reg': [0.1, 0.2, 0.3],
-                'catboost__min_child_samples': [100, 200, 300],
-                'catboost__subsample': [0.5, 0.75, 1],
-                'catboost__colsample_bylevel': [0.5, 0.75, 1],
-                'catboost__loss_function': ["RMSE", "MAE", "Quantile:alpha=0.5"],
-                'catboost__bootstrap_type': ["Bayesian", "Bernoulli", "MVS"],
-                'catboost__eval_metric': ["RMSE", "MAE", "R2"]
+                # 'scaler__with_std': [True, False],
+                # 'catboost__depth': [4, 5, 6],
+                # 'catboost__learning_rate': [0.01, 0.1, 0.2],
+                # 'catboost__l2_leaf_reg': [0.1, 0.2, 0.3],
+                # 'catboost__min_child_samples': [100, 200, 300],
+                # 'catboost__subsample': [0.5, 0.75, 1],
+                # 'catboost__colsample_bylevel': [0.5, 0.75, 1],
+                # 'catboost__loss_function': ["RMSE", "MAE", "Quantile:alpha=0.5"],
+                # 'catboost__bootstrap_type': ["Bayesian", "Bernoulli", "MVS"],
+                # 'catboost__eval_metric': ["RMSE", "MAE", "R2"]
+
+                # Best results
+                "scaler__with_std": [False],
+                "catboost__depth": [4],
+                "catboost__learning_rate": [0.1],
+                "catboost__l2_leaf_reg": [0.1],
+                "catboost__min_child_samples": [100],
+                "catboost__subsample": [0.75],
+                "catboost__colsample_bylevel": [0.75],
+                "catboost__loss_function": ["RMSE"],
+                "catboost__bootstrap_type": ["Bernoulli"],
+                "catboost__eval_metric": ["RMSE"],
             }
         },
         {
