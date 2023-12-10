@@ -4,6 +4,10 @@ import dill as pickle
 import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.inspection import permutation_importance
+from matplotlib import pyplot as plt
+from scikeras.wrappers import KerasRegressor
+from tensorflow.keras.utils import plot_model
 import sys
 
 PROJECT_PATH = "C:\\Users\\stepa\\PycharmProjects\\battery_state_prediction"
@@ -37,6 +41,29 @@ if __name__ == '__main__':
 
     print(df)
     print()
+
+    if isinstance(estimator[2], KerasRegressor):
+        estimator[2].model_.summary()
+        plot_model(estimator[2].model_, to_file='model.png', show_shapes=True, show_layer_names=True,
+                   show_trainable=True, show_layer_activations=True)
+        results = permutation_importance(estimator, X_test, y_test, scoring='neg_mean_squared_error', random_state=42)
+        # get importance
+        feature_importances = results.importances_mean[1:]
+        print(len(feature_importances))
+    else:
+        feature_importances = estimator[2].feature_importances_
+        print(len(feature_importances))
+
+    importance_dict = dict(zip(X_test.columns[1:], feature_importances))
+    plt.figure(figsize=(10, 6))
+    plt.bar(importance_dict.keys(), importance_dict.values(), color='skyblue')
+    plt.xticks(rotation=90)  # Rotate labels for better readability
+    plt.xlabel('Parameters')
+    plt.ylabel('Importance (Log Scale)')
+    plt.yscale('log')  # Set y-axis to logarithmic scale
+    plt.title('Importance of Different Parameters in Battery Health Prediction (Log Scale)')
+    plt.tight_layout()  # Adjust layout for better display
+    plt.show()
 
     mse = round(mean_squared_error(y_test, predictions), 5)
     print(f'MSE = {mse}')
