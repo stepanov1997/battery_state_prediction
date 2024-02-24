@@ -6,3 +6,5 @@
 *.iml
 out
 gen
+data
+src/main/python/__pycache__/
