@@ -45,6 +45,11 @@ class DataProcessor:
         for i in range(min_repeats):
             c = np.concatenate((c, a[i * 350:(i + 1) * 350], b[i * 350:(i + 1) * 350]))
 
+        plt.rcParams.update({'font.size': 15,  # Veličina fonta za tickove i labelu
+                             'axes.labelsize': 'large',  # Veličina fonta za oznake osa
+                             'axes.titlesize': 'x-large',  # Veličina fonta za naslov
+                             'legend.fontsize': 'large'})  # Veličina fonta za legendu
+
         plt.figure(figsize=(12, 6))
 
         trend = 'charge' if c[1] > c[0] else 'discharge'
@@ -61,7 +66,6 @@ class DataProcessor:
         color = 'g' if trend == 'charge' else 'r'
         plt.plot(range(start, len(c)), c[start:], color + '-')
 
-        plt.title('Battery Charging and Discharging Cycle (B0005.mat)')
         plt.xlabel('Time in cycle [s]')
         plt.ylabel('Voltage [V]')
         plt.legend(['Discharge', 'Charge'], loc='best')
